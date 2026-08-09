@@ -56,7 +56,7 @@ REQUEST_INTERVAL_SEC = 1.0  # サイトへの配慮（リクエスト間隔）
 # 1日あたりのチェック件数に上限を設け、最終更新日時が古い行から
 # 優先的に処理することで、リクエスト数・実行時間・APIクォータを節約する。
 # 例：200件登録時、DAILY_LIMIT=40なら約5日で全件が一巡する。
-DAILY_LIMIT = int(os.environ.get("DAILY_LIMIT", "40"))
+DAILY_LIMIT = int(os.environ.get("DAILY_LIMIT") or "40")
 
 # GitHub ActionsのランナーIPが一時的に不安定なことがあるため、
 # 接続失敗時はリトライする（診断の結果、requestsライブラリ自体やUser-Agentは
