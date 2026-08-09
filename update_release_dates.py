@@ -229,6 +229,8 @@ def fetch_search_items(genre, search_title):
     url = base_url + requests.utils.quote(query)
 
     last_error = None
+    MIN_VALID_RESPONSE_LEN = 1000  # 正常な検索結果ページは通常数万文字ある
+
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             # (connect timeout, read timeout) を分離。GitHub Actionsの
@@ -236,6 +238,22 @@ def fetch_search_items(genre, search_title):
             # 短めに切って早くリトライに回す。
             resp = requests.get(url, timeout=(10, 30), headers=HEADERS)
             resp.encoding = "utf-8"
+
+            # 極端に短い応答（数十文字程度）は、サーバー側の一時的な
+            # エラーページや不完全な応答である可能性が高いため、
+            # 接続エラーと同様にリトライ対象とする。
+            if len(resp.text) < MIN_VALID_RESPONSE_LEN:
+                print(
+                    f"⚠️ 応答が異常に短いため再試行します"
+                    f"（{attempt}/{MAX_RETRIES}回目, 文字数={len(resp.text)}, {url}）"
+                )
+                if attempt < MAX_RETRIES:
+                    time.sleep(RETRY_BACKOFF_SEC * attempt)
+                    continue
+                else:
+                    print(f"❌ 最終試行でも応答が異常に短いままでした: {url}")
+                    return [], allowed_categories
+
             items = extract_items(resp.text)
 
             if not items:
