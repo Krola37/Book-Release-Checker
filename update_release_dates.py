@@ -400,6 +400,7 @@ def select_rows_to_check(rows, daily_limit):
     戻り値には last_update も含める（選定理由をログで確認できるように）。
     """
     candidates = []
+    parse_fail_examples = []
     for i, row in enumerate(rows[1:], start=2):
         title = row[0].strip() if len(row) > 0 else ""
         if not title:
@@ -409,7 +410,16 @@ def select_rows_to_check(rows, daily_limit):
             last_update = datetime.strptime(last_update_str, "%Y/%m/%d %H:%M:%S")
         except (ValueError, IndexError):
             last_update = datetime.min  # 未チェックの行は最優先で処理する
+            # 空文字ではないのにパースに失敗した場合は、実際に読み込んだ
+            # 生の値をログに出す（フォーマットの想定違いを特定するため）
+            if last_update_str and len(parse_fail_examples) < 5:
+                parse_fail_examples.append((title, last_update_str))
         candidates.append((last_update, i, row))
+
+    if parse_fail_examples:
+        print(f"    ⚠️ F列のパースに失敗した行があります（未チェック扱いになります）。実際に読み込んだ値の例:")
+        for title, raw_value in parse_fail_examples:
+            print(f"        ・{title}: 読み込んだF列の値={raw_value!r}")
 
     candidates.sort(key=lambda x: x[0])  # 古い順（未チェック優先）
     return [(i, row, last_update) for last_update, i, row in candidates[:daily_limit]]
