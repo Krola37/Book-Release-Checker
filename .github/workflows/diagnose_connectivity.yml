@@ -1,0 +1,35 @@
+# 保存先: .github/workflows/diagnose_connectivity.yml
+# 目的：GitHub Actionsの実行環境から
+#   ①一般的な外部サイトに接続できるか
+#   ②sumikko.info系サイトに接続できるか
+# を切り分けて確認する。
+name: Diagnose Connectivity
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check general internet connectivity
+        run: |
+          echo "=== httpbin.org (一般的な外部サイト) ==="
+          curl -v --max-time 15 https://httpbin.org/get || echo "❌ httpbin.org にも接続できません"
+
+      - name: Check sumikko.info (comic)
+        run: |
+          echo "=== comic.sumikko.info ==="
+          curl -v --max-time 15 "https://comic.sumikko.info/search/?k=%E3%83%AF%E3%83%B3%E3%83%94%E3%83%BC%E3%82%B9" || echo "❌ comic.sumikko.info に接続できません"
+
+      - name: Check sumikko.info top page
+        run: |
+          echo "=== comic.sumikko.info トップページ ==="
+          curl -v --max-time 15 "https://comic.sumikko.info/" || echo "❌ トップページにも接続できません"
+
+      - name: DNS resolution check
+        run: |
+          echo "=== DNS解決確認 ==="
+          nslookup comic.sumikko.info || true
+          echo "=== GitHub Actions ランナーのグローバルIP ==="
+          curl -s --max-time 10 https://ifconfig.me || true
