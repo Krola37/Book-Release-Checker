@@ -109,8 +109,34 @@ def simplify_title_for_search(title):
     return title
 
 
-ITEM_NAME_VOLUME_PATTERN = re.compile(r"^(.*?)[\s　]*([0-9]+)$")
 DATE_PATTERN = re.compile(r"([0-9]{2})年([0-9]{1,2})月([0-9]{1,2})日\(([月火水木金土日])\)")
+
+# .name の巻数表記は複数パターンが混在している（実データで確認済み）。
+# 優先度順に上から試し、最初にマッチしたものを採用する。
+#   1. "タイトル(N)"（括弧内数字。"(N)(完)" "(コミック)(N)" "(N)特装版..." も含む）
+#      例: ヴァニタスの手記(11) / おっさん冒険者ケインの善行(16)(完) /
+#          転生したら最強種たちが住まう島でした。この島でスローライフを楽しみます(コミック)(9)
+#   2. "タイトルN巻" / "タイトル N巻"
+#      例: 大正もののけ闇祓いバッケ坂の怪異1巻 / 大正もののけ闇祓い バッケ坂の怪異 2巻
+#   3. "タイトル N"（末尾がそのまま数字。従来対応していた形式）
+#      例: ONE PIECE 115
+#   4. "タイトル N サブタイトル"（巻数の直後に空白を挟んでサブタイトルが続く）
+#      例: 骨姫ロザリー 3 〜死者の最期を追体験し、力を引き継ぐ〜
+VOLUME_PATTERNS = [
+    re.compile(r"^(.*?)\((\d{1,4})\)"),
+    re.compile(r"^(.*?)[\s　]*(\d{1,4})巻"),
+    re.compile(r"^(.*?)[\s　]*(\d{1,4})$"),
+    re.compile(r"^(.*?)[\s　]+(\d{1,4})[\s　]"),
+]
+
+
+def extract_title_and_volume(name_text):
+    """.name のテキストから (タイトル, 巻数) を抽出する。抽出できなければ (None, None)。"""
+    for pattern in VOLUME_PATTERNS:
+        m = pattern.match(name_text)
+        if m:
+            return m.group(1).strip(), int(m.group(2))
+    return None, None
 
 # ジャンル（スプレッドシートD列）ごとに、type-tag（カテゴリ表示）の
 # 許可リストを切り替える（ホワイトリスト方式）。
@@ -172,13 +198,11 @@ def extract_items(html):
         if not dm:
             continue
 
-        vm = ITEM_NAME_VOLUME_PATTERN.match(name_text)
-        if vm:
-            title = vm.group(1).strip()
-            volume = int(vm.group(2))
-        else:
-            # 巻数の数字が末尾にない（単発作品など）はスキップ対象にする
+        vm_title, vm_volume = extract_title_and_volume(name_text)
+        if vm_title is None:
+            # 巻数を認識できない（単発作品など）はスキップ対象にする
             continue
+        title, volume = vm_title, vm_volume
 
         items.append(
             {
