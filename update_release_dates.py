@@ -134,10 +134,11 @@ ALLOWED_CATEGORIES = {
 }
 
 
-def extract_items(html, allowed_categories):
+def extract_items(html):
     """
     検索結果ページのHTMLから「作品タイトル・巻数・発売日・カテゴリ」の
-    一覧を抽出する（実際のタグ構造に基づく解析）。
+    一覧を抽出する（実際のタグ構造に基づく解析）。カテゴリによる絞り込みは
+    ここでは行わず、全件を返す（呼び出し側でフィルタ・デバッグ出力を行う）。
 
     ページ構造（実データで確認済み）：
       <li class="item">
@@ -146,9 +147,6 @@ def extract_items(html, allowed_categories):
         <div class="sab"><span>26年7月3日(金)</span><span>尾田栄一郎</span></div>
         ...
       </li>
-
-    type-tag が allowed_categories に含まれないもの（グッズ・関連商品・
-    対象外ジャンルの商品）は除外する。
     """
     soup = BeautifulSoup(html, "html.parser")
     items = []
@@ -156,8 +154,6 @@ def extract_items(html, allowed_categories):
     for li in soup.select("li.item"):
         type_tag = li.select_one(".type-tag")
         category = type_tag.get_text(strip=True) if type_tag else ""
-        if category not in allowed_categories:
-            continue  # ホワイトリスト外（グッズ・対象外ジャンル）を除外
 
         name_div = li.select_one(".name")
         if not name_div:
@@ -199,6 +195,10 @@ def extract_items(html, allowed_categories):
 
 
 def fetch_search_items(genre, search_title):
+    """
+    検索結果を取得する。戻り値は (全アイテムのリスト, 許可カテゴリのset)。
+    カテゴリによる絞り込みは呼び出し側で行う（不一致時のデバッグ出力のため）。
+    """
     base_url = GENRE_URLS.get(genre, GENRE_URLS["コミック"])
     allowed_categories = ALLOWED_CATEGORIES.get(genre, ALLOWED_CATEGORIES["コミック"])
     query = simplify_title_for_search(search_title)
@@ -212,7 +212,7 @@ def fetch_search_items(genre, search_title):
             # 短めに切って早くリトライに回す。
             resp = requests.get(url, timeout=(10, 30), headers=HEADERS)
             resp.encoding = "utf-8"
-            return extract_items(resp.text, allowed_categories)
+            return extract_items(resp.text), allowed_categories
         except requests.exceptions.RequestException as e:
             last_error = e
             print(f"⚠️ 接続失敗（{attempt}/{MAX_RETRIES}回目, {url}）: {e}")
@@ -364,9 +364,15 @@ def process_auto_rows(ws, calendar_service, rows, daily_limit):
             m = re.match(r"(.+?)([0-9]+)$", title)
             search_title = m.group(1).strip() if m else title
 
-            items = fetch_search_items(genre, search_title)
+            all_items, allowed_categories = fetch_search_items(genre, search_title)
             normalized_search = normalize_title(search_title)
-            exact_matches = [it for it in items if normalize_title(it["title"]) == normalized_search]
+
+            # まずカテゴリを絞らずタイトル一致だけで候補を探し、
+            # その中でカテゴリが許可リストに入っているものだけを採用する。
+            # こうすることで「タイトルは一致するがカテゴリで弾かれた」ケースを
+            # デバッグ出力で判別できるようにする。
+            title_matches = [it for it in all_items if normalize_title(it["title"]) == normalized_search]
+            exact_matches = [it for it in title_matches if it["category"] in allowed_categories]
 
             if exact_matches:
                 best = max(exact_matches, key=lambda it: it["volume"])
@@ -398,8 +404,25 @@ def process_auto_rows(ws, calendar_service, rows, daily_limit):
                     batch_update_row(
                         ws, i, {5: "完了", 6: datetime.now().strftime("%Y/%m/%d %H:%M:%S")}
                     )
+            elif title_matches:
+                # タイトルは一致したがカテゴリで除外された → ホワイトリストの不足
+                found_categories = sorted({it["category"] for it in title_matches})
+                print(
+                    f"🚫 タイトルは一致するがカテゴリ不一致: {title} "
+                    f"（見つかったカテゴリ: {found_categories} / 許可: {sorted(allowed_categories)}）"
+                )
+                batch_update_row(
+                    ws, i, {5: "完了", 6: datetime.now().strftime("%Y/%m/%d %H:%M:%S")}
+                )
             else:
-                print(f"🔍 完全一致する作品が見つかりませんでした: {title}（検索クエリ: {search_title}）")
+                # タイトル自体が1件も一致しなかった → 検索結果に候補があれば
+                # 近そうなタイトルを数件出して、表記ゆれの手がかりにする
+                sample_titles = [it["title"] for it in all_items[:5]]
+                print(
+                    f"🔍 完全一致する作品が見つかりませんでした: {title}（検索クエリ: {search_title}）"
+                    f" / 検索結果件数: {len(all_items)}"
+                    f"{' / 候補例: ' + str(sample_titles) if sample_titles else ''}"
+                )
                 batch_update_row(
                     ws, i, {5: "完了", 6: datetime.now().strftime("%Y/%m/%d %H:%M:%S")}
                 )
