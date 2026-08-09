@@ -396,6 +396,8 @@ def select_rows_to_check(rows, daily_limit):
     1日あたりの処理件数に上限を設けることで、リクエスト数・実行時間・
     Sheets APIクォータを大きく節約しつつ、数日〜1週間程度で全件を
     一巡させる。
+
+    戻り値には last_update も含める（選定理由をログで確認できるように）。
     """
     candidates = []
     for i, row in enumerate(rows[1:], start=2):
@@ -410,14 +412,21 @@ def select_rows_to_check(rows, daily_limit):
         candidates.append((last_update, i, row))
 
     candidates.sort(key=lambda x: x[0])  # 古い順（未チェック優先）
-    return [(i, row) for _, i, row in candidates[:daily_limit]]
+    return [(i, row, last_update) for last_update, i, row in candidates[:daily_limit]]
 
 
 def process_auto_rows(ws, calendar_service, rows, daily_limit):
     targets = select_rows_to_check(rows, daily_limit)
     print(f"📋 今回チェック対象: {len(targets)}件（全{len(rows) - 1}件中）")
 
-    for i, row in targets:
+    # 選定理由（前回チェック日時）を出力し、なぜこの40件が選ばれたか
+    # 後から確認できるようにする
+    for i, row, last_update in targets:
+        title = row[0].strip() if len(row) > 0 else ""
+        last_update_display = "未チェック" if last_update == datetime.min else last_update.strftime("%Y/%m/%d %H:%M:%S")
+        print(f"    ・{title}（前回チェック: {last_update_display}）")
+
+    for i, row, _ in targets:
         title = row[0].strip() if len(row) > 0 else ""
         current_latest_volume = row[1].strip() if len(row) > 1 else ""
         genre = row[3].strip() if len(row) > 3 else ""
