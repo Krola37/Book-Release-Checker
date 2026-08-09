@@ -64,6 +64,12 @@ DAILY_LIMIT = int(os.environ.get("DAILY_LIMIT") or "40")
 MAX_RETRIES = 3
 RETRY_BACKOFF_SEC = 5
 
+# 接続エラーがこの回数連続で発生したら、それ以上粘らずに処理を中断する。
+# GitHub Actionsの同一ジョブ内ではランナーのIPが変わらないため、
+# 個々のリクエストをリトライし続けても無駄になる。中断してジョブ自体を
+# 失敗させ、ワークフロー側で新しいランナー（＝新しいIP）でやり直す。
+MAX_CONSECUTIVE_NETWORK_FAILURES = 3
+
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -454,6 +460,8 @@ def process_auto_rows(ws, calendar_service, rows, daily_limit):
         last_update_display = "未チェック" if last_update == datetime.min else last_update.strftime("%Y/%m/%d")
         print(f"    ・{title}（前回チェック: {last_update_display}）")
 
+    consecutive_network_failures = 0
+
     for i, row, _ in targets:
         title = row[0].strip() if len(row) > 0 else ""
         current_latest_volume = row[1].strip() if len(row) > 1 else ""
@@ -465,6 +473,7 @@ def process_auto_rows(ws, calendar_service, rows, daily_limit):
             search_title = m.group(1).strip() if m else title
 
             all_items, allowed_categories = fetch_search_items(genre, search_title)
+            consecutive_network_failures = 0  # 成功したのでリセット
             normalized_search = normalize_title(search_title)
 
             # まずカテゴリを絞らずタイトル一致だけで候補を探し、
@@ -527,6 +536,20 @@ def process_auto_rows(ws, calendar_service, rows, daily_limit):
                     ws, i, {5: "完了", 6: force_text(datetime.now().strftime("%Y/%m/%d"))}
                 )
 
+        except requests.exceptions.RequestException as e:
+            consecutive_network_failures += 1
+            print(
+                f"❌ 接続エラー（Row {i}, 連続{consecutive_network_failures}回目）: {e}"
+            )
+            if consecutive_network_failures >= MAX_CONSECUTIVE_NETWORK_FAILURES:
+                print(
+                    f"🛑 接続エラーが{MAX_CONSECUTIVE_NETWORK_FAILURES}回連続で発生したため処理を中断します"
+                    f"（ランナーのネットワークが不調の可能性が高いです。ジョブを失敗させて"
+                    f"ワークフロー側の再試行に委ねます）。"
+                )
+                raise TooManyNetworkFailures(
+                    f"{MAX_CONSECUTIVE_NETWORK_FAILURES}回連続で接続エラーが発生しました"
+                ) from e
         except Exception as e:
             print(f"❌ エラー（Row {i}）: {e}")
 
@@ -551,4 +574,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+
+    try:
+        main()
+    except TooManyNetworkFailures as e:
+        print(f"❌ 異常終了: {e}")
+        sys.exit(1)  # ワークフロー側のフォールバックジョブに処理を委ねる

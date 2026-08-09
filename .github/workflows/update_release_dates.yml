@@ -1,4 +1,14 @@
 # 保存先: リポジトリ直下の .github/workflows/update_release_dates.yml
+#
+# 【リトライ構成について】
+# GitHub Actionsのランナーは、同一ジョブ内ではIPアドレスが変わらない。
+# そのため「ランナーのIPがsumikko.infoに一時的に届かない」タイプの
+# 障害は、同じジョブ内でいくらリクエストをリトライしても解決しない。
+# update_release_dates.py 側は、接続エラーが3回連続で発生した時点で
+# 早期に諦めて非ゼロ終了コードでジョブを失敗させる設計になっている。
+# それを受けて、ここでは「前のジョブが失敗したら、新しいランナー
+# （＝新しいIP）で自動的にやり直す」フォールバックジョブを2段階
+# 用意している。
 name: Update Release Dates
 
 on:
@@ -30,4 +40,58 @@ jobs:
           CALENDAR_ID: ${{ secrets.CALENDAR_ID }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           DAILY_LIMIT: ${{ vars.DAILY_LIMIT }} # 未設定ならスクリプト側のデフォルト(40)が使われる
+        run: python update_release_dates.py
+
+  # 1回目（update）が失敗した場合のみ、新しいランナーで自動的にやり直す
+  update_retry_1:
+    needs: update
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run update script (retry 1)
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          SHEET_NAME: ${{ secrets.SHEET_NAME }}
+          CALENDAR_ID: ${{ secrets.CALENDAR_ID }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DAILY_LIMIT: ${{ vars.DAILY_LIMIT }}
+        run: python update_release_dates.py
+
+  # 2回目（update_retry_1）も失敗した場合のみ、さらにもう一度やり直す
+  update_retry_2:
+    needs: update_retry_1
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run update script (retry 2)
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          SHEET_NAME: ${{ secrets.SHEET_NAME }}
+          CALENDAR_ID: ${{ secrets.CALENDAR_ID }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DAILY_LIMIT: ${{ vars.DAILY_LIMIT }}
         run: python update_release_dates.py
