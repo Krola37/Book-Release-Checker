@@ -70,6 +70,11 @@ RETRY_BACKOFF_SEC = 5
 # 失敗させ、ワークフロー側で新しいランナー（＝新しいIP）でやり直す。
 MAX_CONSECUTIVE_NETWORK_FAILURES = 3
 
+
+class TooManyNetworkFailures(Exception):
+    """接続エラーが連続で発生し、処理を中断したことを示す例外。"""
+    pass
+
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
