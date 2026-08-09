@@ -50,10 +50,19 @@ GENRE_URLS = {
 REQUEST_INTERVAL_SEC = 1.0  # サイトへの配慮（リクエスト間隔）
 RESET_AFTER_DAYS = 5        # 「完了」を「未処理」に戻すまでの日数（GAS版と同じ）
 
-DATE_VOL_PATTERN = re.compile(
-    r"([0-9]{1,4})([0-9]{2})年([0-9]{1,2})月([0-9]{1,2})日\(([月火水木金土日])\)"
-)
-MARKER_PATTERN = re.compile(r"コミック(?!ス)")
+# GitHub ActionsのランナーIPが一時的に不安定なことがあるため、
+# 接続失敗時はリトライする（診断の結果、requestsライブラリ自体やUser-Agentは
+# 原因ではなく、実行のたびに変わるランナーIPの一時的な問題と判明したため）
+MAX_RETRIES = 3
+RETRY_BACKOFF_SEC = 5
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+}
 
 
 # ------------------------------------------------------------
@@ -81,42 +90,68 @@ def simplify_title_for_search(title):
     return title
 
 
-def extract_comic_items(plain_text):
-    """
-    ページ本文から「作品タイトル・巻数・発売日」の一覧を抽出する。
+ITEM_NAME_VOLUME_PATTERN = re.compile(r"^(.*?)[\s　]*([0-9]+)$")
+DATE_PATTERN = re.compile(r"([0-9]{2})年([0-9]{1,2})月([0-9]{1,2})日\(([月火水木金土日])\)")
 
-    手順：
-      1. "コミック"（"コミックス"というレーベル表記の一部は除外）の出現位置を収集
-         → 各アイテムの「タイトル開始位置」の目印
-      2. "巻数＋年＋月＋日＋(曜日)" パターンの出現位置を収集
-         → 各アイテムの「タイトル終了位置（＝巻数の開始位置）」
-      3. 日付パターンごとに直前の最も近いマーカー位置からの区間を
-         タイトルとして切り出す
-    """
-    marker_positions = [m.end() for m in MARKER_PATTERN.finditer(plain_text)]
 
+def extract_comic_items(html):
+    """
+    検索結果ページのHTMLから「作品タイトル・巻数・発売日・カテゴリ」の
+    一覧を抽出する（実際のタグ構造に基づく解析）。
+
+    ページ構造（実データで確認済み）：
+      <li class="item">
+        <div class="Types"><span class="type type-tag">コミック</span></div>
+        <div class="name">ONE PIECE 115</div>
+        <div class="sab"><span>26年7月3日(金)</span><span>尾田栄一郎</span></div>
+        ...
+      </li>
+
+    type-tag が "コミック" 以外（"ムックその他" などグッズ・関連商品）は
+    ここで除外する。これが「作品以外の商品」対策の本体。
+    """
+    soup = BeautifulSoup(html, "html.parser")
     items = []
-    for dv in DATE_VOL_PATTERN.finditer(plain_text):
-        marker_pos = None
-        for pos in reversed(marker_positions):
-            if pos < dv.start():
-                marker_pos = pos
-                break
-        if marker_pos is None:
+
+    for li in soup.select("li.item"):
+        type_tag = li.select_one(".type-tag")
+        category = type_tag.get_text(strip=True) if type_tag else ""
+        if category != "コミック":
+            continue  # グッズ・ムック等、書籍以外の商品を除外
+
+        name_div = li.select_one(".name")
+        if not name_div:
+            continue
+        name_text = name_div.get_text(strip=True)
+
+        sab_divs = li.select(".sab")
+        if not sab_divs:
+            continue
+        date_span = sab_divs[0].find("span")
+        if not date_span:
+            continue
+        date_text = date_span.get_text(strip=True)
+
+        dm = DATE_PATTERN.match(date_text)
+        if not dm:
             continue
 
-        raw_title = plain_text[marker_pos:dv.start()].strip()
-        if not raw_title or len(raw_title) > 40:
+        vm = ITEM_NAME_VOLUME_PATTERN.match(name_text)
+        if vm:
+            title = vm.group(1).strip()
+            volume = int(vm.group(2))
+        else:
+            # 巻数の数字が末尾にない（単発作品など）はスキップ対象にする
             continue
 
         items.append(
             {
-                "title": raw_title,
-                "volume": int(dv.group(1)),
-                "year": 2000 + int(dv.group(2)),
-                "month": int(dv.group(3)),
-                "day": int(dv.group(4)),
-                "weekday": dv.group(5),
+                "title": title,
+                "volume": volume,
+                "year": 2000 + int(dm.group(1)),
+                "month": int(dm.group(2)),
+                "day": int(dm.group(3)),
+                "weekday": dm.group(4),
             }
         )
     return items
@@ -127,15 +162,22 @@ def fetch_search_items(genre, search_title):
     query = simplify_title_for_search(search_title)
     url = base_url + requests.utils.quote(query)
 
-    resp = requests.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
-    resp.encoding = "utf-8"
+    last_error = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            # (connect timeout, read timeout) を分離。GitHub Actionsの
+            # ランナーIPが一時的に不安定なことがあるため、接続段階は
+            # 短めに切って早くリトライに回す。
+            resp = requests.get(url, timeout=(10, 30), headers=HEADERS)
+            resp.encoding = "utf-8"
+            return extract_comic_items(resp.text)
+        except requests.exceptions.RequestException as e:
+            last_error = e
+            print(f"⚠️ 接続失敗（{attempt}/{MAX_RETRIES}回目, {url}）: {e}")
+            if attempt < MAX_RETRIES:
+                time.sleep(RETRY_BACKOFF_SEC * attempt)
 
-    soup = BeautifulSoup(resp.text, "html.parser")
-    for tag in soup(["script", "style"]):
-        tag.decompose()
-
-    plain_text = unicodedata.normalize("NFKC", soup.get_text())
-    return extract_comic_items(plain_text)
+    raise last_error
 
 
 # ------------------------------------------------------------
