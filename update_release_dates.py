@@ -393,7 +393,7 @@ def process_manual_rows(ws, calendar_service, rows):
             batch_update_row(
                 ws,
                 i,
-                {5: "完了", 6: force_text(datetime.now().strftime("%Y/%m/%d %H:%M:%S")), 8: False},
+                {5: "完了", 6: force_text(datetime.now().strftime("%Y/%m/%d")), 8: False},
             )
 
             print(f"✅ 【手動登録成功】 Row {i}: {title} を処理しました。")
@@ -419,9 +419,14 @@ def select_rows_to_check(rows, daily_limit):
         if not title:
             continue
         last_update_str = row[5].strip() if len(row) > 5 else ""
-        try:
-            last_update = datetime.strptime(last_update_str, "%Y/%m/%d %H:%M:%S")
-        except (ValueError, IndexError):
+        last_update = None
+        for fmt in ("%Y/%m/%d", "%Y/%m/%d %H:%M:%S"):
+            try:
+                last_update = datetime.strptime(last_update_str, fmt)
+                break
+            except ValueError:
+                continue
+        if last_update is None:
             last_update = datetime.min  # 未チェックの行は最優先で処理する
             # 空文字ではないのにパースに失敗した場合は、実際に読み込んだ
             # 生の値をログに出す（フォーマットの想定違いを特定するため）
@@ -442,11 +447,11 @@ def process_auto_rows(ws, calendar_service, rows, daily_limit):
     targets = select_rows_to_check(rows, daily_limit)
     print(f"📋 今回チェック対象: {len(targets)}件（全{len(rows) - 1}件中）")
 
-    # 選定理由（前回チェック日時）を出力し、なぜこの40件が選ばれたか
+    # 選定理由（前回チェック日）を出力し、なぜこの40件が選ばれたか
     # 後から確認できるようにする
     for i, row, last_update in targets:
         title = row[0].strip() if len(row) > 0 else ""
-        last_update_display = "未チェック" if last_update == datetime.min else last_update.strftime("%Y/%m/%d %H:%M:%S")
+        last_update_display = "未チェック" if last_update == datetime.min else last_update.strftime("%Y/%m/%d")
         print(f"    ・{title}（前回チェック: {last_update_display}）")
 
     for i, row, _ in targets:
@@ -483,7 +488,7 @@ def process_auto_rows(ws, calendar_service, rows, daily_limit):
                             2: matched_volume,
                             3: force_text(release_date.strftime("%Y/%m/%d")),
                             5: "完了",
-                            6: force_text(datetime.now().strftime("%Y/%m/%d %H:%M:%S")),
+                            6: force_text(datetime.now().strftime("%Y/%m/%d")),
                         },
                     )
 
@@ -497,7 +502,7 @@ def process_auto_rows(ws, calendar_service, rows, daily_limit):
                 else:
                     print(f"⏭ 最新巻数の更新なし: {title}")
                     batch_update_row(
-                        ws, i, {5: "完了", 6: force_text(datetime.now().strftime("%Y/%m/%d %H:%M:%S"))}
+                        ws, i, {5: "完了", 6: force_text(datetime.now().strftime("%Y/%m/%d"))}
                     )
             elif title_matches:
                 # タイトルは一致したがカテゴリで除外された → ホワイトリストの不足
@@ -507,7 +512,7 @@ def process_auto_rows(ws, calendar_service, rows, daily_limit):
                     f"（見つかったカテゴリ: {found_categories} / 許可: {sorted(allowed_categories)}）"
                 )
                 batch_update_row(
-                    ws, i, {5: "完了", 6: force_text(datetime.now().strftime("%Y/%m/%d %H:%M:%S"))}
+                    ws, i, {5: "完了", 6: force_text(datetime.now().strftime("%Y/%m/%d"))}
                 )
             else:
                 # タイトル自体が1件も一致しなかった → 検索結果に候補があれば
@@ -519,7 +524,7 @@ def process_auto_rows(ws, calendar_service, rows, daily_limit):
                     f"{' / 候補例: ' + str(sample_titles) if sample_titles else ''}"
                 )
                 batch_update_row(
-                    ws, i, {5: "完了", 6: force_text(datetime.now().strftime("%Y/%m/%d %H:%M:%S"))}
+                    ws, i, {5: "完了", 6: force_text(datetime.now().strftime("%Y/%m/%d"))}
                 )
 
         except Exception as e:
