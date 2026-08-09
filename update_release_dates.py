@@ -336,6 +336,17 @@ def parse_date_flexible(s):
     raise ValueError(f"日付形式を認識できません: {s}")
 
 
+def force_text(value):
+    """
+    Sheets APIが「日付っぽい文字列」を勝手に日付型へ変換してしまい、
+    セルの表示形式（たまたま日付のみ等）に従って情報が欠落する
+    （例: "2026/08/09 12:27:09" → 読み込むと "2026/08/09" に時刻が消える）
+    現象を防ぐため、先頭にアポストロフィを付けて強制的にプレーンテキスト
+    として保存する。表示上アポストロフィそのものは見えない。
+    """
+    return f"'{value}"
+
+
 def batch_update_row(ws, row_index, values):
     """
     1行分の複数セルを1回のAPI呼び出しでまとめて更新する。
@@ -343,9 +354,11 @@ def batch_update_row(ws, row_index, values):
     update_cellを複数回呼ぶ代わりにこちらを使う。
 
     values: {列番号: 値} の辞書。例: {2: 5, 3: "2026/03/04", 5: "完了"}
+    value_input_option="USER_ENTERED" にすることで、force_text() で
+    付与したアポストロフィが「テキスト強制」として正しく解釈される。
     """
     cells = [gspread.Cell(row=row_index, col=col, value=value) for col, value in values.items()]
-    ws.update_cells(cells)
+    ws.update_cells(cells, value_input_option="USER_ENTERED")
 
 
 # ------------------------------------------------------------
@@ -380,7 +393,7 @@ def process_manual_rows(ws, calendar_service, rows):
             batch_update_row(
                 ws,
                 i,
-                {5: "完了", 6: datetime.now().strftime("%Y/%m/%d %H:%M:%S"), 8: False},
+                {5: "完了", 6: force_text(datetime.now().strftime("%Y/%m/%d %H:%M:%S")), 8: False},
             )
 
             print(f"✅ 【手動登録成功】 Row {i}: {title} を処理しました。")
@@ -468,9 +481,9 @@ def process_auto_rows(ws, calendar_service, rows, daily_limit):
                         i,
                         {
                             2: matched_volume,
-                            3: release_date.strftime("%Y/%m/%d"),
+                            3: force_text(release_date.strftime("%Y/%m/%d")),
                             5: "完了",
-                            6: datetime.now().strftime("%Y/%m/%d %H:%M:%S"),
+                            6: force_text(datetime.now().strftime("%Y/%m/%d %H:%M:%S")),
                         },
                     )
 
@@ -484,7 +497,7 @@ def process_auto_rows(ws, calendar_service, rows, daily_limit):
                 else:
                     print(f"⏭ 最新巻数の更新なし: {title}")
                     batch_update_row(
-                        ws, i, {5: "完了", 6: datetime.now().strftime("%Y/%m/%d %H:%M:%S")}
+                        ws, i, {5: "完了", 6: force_text(datetime.now().strftime("%Y/%m/%d %H:%M:%S"))}
                     )
             elif title_matches:
                 # タイトルは一致したがカテゴリで除外された → ホワイトリストの不足
@@ -494,7 +507,7 @@ def process_auto_rows(ws, calendar_service, rows, daily_limit):
                     f"（見つかったカテゴリ: {found_categories} / 許可: {sorted(allowed_categories)}）"
                 )
                 batch_update_row(
-                    ws, i, {5: "完了", 6: datetime.now().strftime("%Y/%m/%d %H:%M:%S")}
+                    ws, i, {5: "完了", 6: force_text(datetime.now().strftime("%Y/%m/%d %H:%M:%S"))}
                 )
             else:
                 # タイトル自体が1件も一致しなかった → 検索結果に候補があれば
@@ -506,7 +519,7 @@ def process_auto_rows(ws, calendar_service, rows, daily_limit):
                     f"{' / 候補例: ' + str(sample_titles) if sample_titles else ''}"
                 )
                 batch_update_row(
-                    ws, i, {5: "完了", 6: datetime.now().strftime("%Y/%m/%d %H:%M:%S")}
+                    ws, i, {5: "完了", 6: force_text(datetime.now().strftime("%Y/%m/%d %H:%M:%S"))}
                 )
 
         except Exception as e:
