@@ -1,0 +1,32 @@
+# 保存先: リポジトリ直下の .github/workflows/update_release_dates.yml
+name: Update Release Dates
+
+on:
+  schedule:
+    # UTC 21:00 = 日本時間 6:00 に毎日実行
+    - cron: "0 21 * * *"
+  workflow_dispatch: {} # 手動実行用（Actionsタブから「Run workflow」で即実行できる）
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run update script
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          SHEET_NAME: ${{ secrets.SHEET_NAME }}
+          CALENDAR_ID: ${{ secrets.CALENDAR_ID }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python update_release_dates.py
