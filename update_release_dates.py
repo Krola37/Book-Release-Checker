@@ -212,7 +212,24 @@ def fetch_search_items(genre, search_title):
             # 短めに切って早くリトライに回す。
             resp = requests.get(url, timeout=(10, 30), headers=HEADERS)
             resp.encoding = "utf-8"
-            return extract_items(resp.text), allowed_categories
+            items = extract_items(resp.text)
+
+            if not items:
+                # 0件だった場合、実際に何が返ってきているのか生データを確認する。
+                # ・作品候補件数の表示があるか（サイト側が本当に0件と判定したか）
+                # ・itemlistのliタグ自体は存在するか（セレクタのズレでないか）
+                # ・想定外のページ（トップページ等）が返っていないか
+                snippet = resp.text[:200].replace("\n", " ")
+                has_item_count = "作品候補" in resp.text
+                li_item_count = resp.text.count('class="item"')
+                print(
+                    f"    🩺 0件デバッグ [{url}] "
+                    f"status={resp.status_code} len={len(resp.text)} "
+                    f'"作品候補"表示={has_item_count} li.item出現数={li_item_count} '
+                    f"先頭200文字: {snippet}"
+                )
+
+            return items, allowed_categories
         except requests.exceptions.RequestException as e:
             last_error = e
             print(f"⚠️ 接続失敗（{attempt}/{MAX_RETRIES}回目, {url}）: {e}")
