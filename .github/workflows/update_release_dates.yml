@@ -29,4 +29,5 @@ jobs:
           SHEET_NAME: ${{ secrets.SHEET_NAME }}
           CALENDAR_ID: ${{ secrets.CALENDAR_ID }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DAILY_LIMIT: ${{ vars.DAILY_LIMIT }} # 未設定ならスクリプト側のデフォルト(40)が使われる
         run: python update_release_dates.py

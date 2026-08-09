@@ -8,10 +8,13 @@ GAS版からの移植版（HTML解析をBeautifulSoup+検証済みロジック�
   SHEET_NAME                   対象シート名（省略時 "シート1"）
   CALENDAR_ID                  Googleカレンダーの CalendarID
   DISCORD_WEBHOOK_URL          Discord Webhook URL（任意。未設定なら通知はスキップ）
+  DAILY_LIMIT                  1日あたりの自動チェック件数上限（任意。省略時40）
 
 シート列構成（GAS版と同じ）：
   A: 作品タイトル   B: 最新巻数   C: 発売日   D: ジャンル
-  E: ステータス      F: 最終更新日時   G: Discord通知フラグ   H: 手動更新フラグ
+  E: ステータス（最終処理結果の表示用。処理対象の判定には使わない）
+  F: 最終更新日時（この日時が古い行から優先的にチェックされる）
+  G: Discord通知フラグ   H: 手動更新フラグ
 """
 
 import json
@@ -48,7 +51,12 @@ GENRE_URLS = {
 }
 
 REQUEST_INTERVAL_SEC = 1.0  # サイトへの配慮（リクエスト間隔）
-RESET_AFTER_DAYS = 5        # 「完了」を「未処理」に戻すまでの日数（GAS版と同じ）
+
+# 新刊は数カ月おきにしか出ないため、毎日全件チェックする必要はない。
+# 1日あたりのチェック件数に上限を設け、最終更新日時が古い行から
+# 優先的に処理することで、リクエスト数・実行時間・APIクォータを節約する。
+# 例：200件登録時、DAILY_LIMIT=40なら約5日で全件が一巡する。
+DAILY_LIMIT = int(os.environ.get("DAILY_LIMIT", "40"))
 
 # GitHub ActionsのランナーIPが一時的に不安定なことがあるため、
 # 接続失敗時はリトライする（診断の結果、requestsライブラリ自体やUser-Agentは
@@ -231,6 +239,18 @@ def parse_date_flexible(s):
     raise ValueError(f"日付形式を認識できません: {s}")
 
 
+def batch_update_row(ws, row_index, values):
+    """
+    1行分の複数セルを1回のAPI呼び出しでまとめて更新する。
+    Sheets APIのクォータ（1分あたりのリクエスト数）を節約するため、
+    update_cellを複数回呼ぶ代わりにこちらを使う。
+
+    values: {列番号: 値} の辞書。例: {2: 5, 3: "2026/03/04", 5: "完了"}
+    """
+    cells = [gspread.Cell(row=row_index, col=col, value=value) for col, value in values.items()]
+    ws.update_cells(cells)
+
+
 # ------------------------------------------------------------
 # メイン処理
 # ------------------------------------------------------------
@@ -260,9 +280,11 @@ def process_manual_rows(ws, calendar_service, rows):
             if is_true(is_notify_target):
                 send_discord(title, matched_volume, release_date.strftime("%Y/%m/%d"), genre)
 
-            ws.update_cell(i, 5, "完了")
-            ws.update_cell(i, 6, datetime.now().strftime("%Y/%m/%d %H:%M:%S"))
-            ws.update_cell(i, 8, False)
+            batch_update_row(
+                ws,
+                i,
+                {5: "完了", 6: datetime.now().strftime("%Y/%m/%d %H:%M:%S"), 8: False},
+            )
 
             print(f"✅ 【手動登録成功】 Row {i}: {title} を処理しました。")
 
@@ -270,16 +292,39 @@ def process_manual_rows(ws, calendar_service, rows):
             print(f"❌ 手動登録エラー（Row {i}）: {e}")
 
 
-def process_auto_rows(ws, calendar_service, rows):
+def select_rows_to_check(rows, daily_limit):
+    """
+    「最終更新日時（F列）が古い行」から優先的にdaily_limit件だけ選ぶ。
+    新刊は数カ月おきにしか出ないため、毎日全件チェックする必要はない。
+    1日あたりの処理件数に上限を設けることで、リクエスト数・実行時間・
+    Sheets APIクォータを大きく節約しつつ、数日〜1週間程度で全件を
+    一巡させる。
+    """
+    candidates = []
     for i, row in enumerate(rows[1:], start=2):
+        title = row[0].strip() if len(row) > 0 else ""
+        if not title:
+            continue
+        last_update_str = row[5].strip() if len(row) > 5 else ""
+        try:
+            last_update = datetime.strptime(last_update_str, "%Y/%m/%d %H:%M:%S")
+        except (ValueError, IndexError):
+            last_update = datetime.min  # 未チェックの行は最優先で処理する
+        candidates.append((last_update, i, row))
+
+    candidates.sort(key=lambda x: x[0])  # 古い順（未チェック優先）
+    return [(i, row) for _, i, row in candidates[:daily_limit]]
+
+
+def process_auto_rows(ws, calendar_service, rows, daily_limit):
+    targets = select_rows_to_check(rows, daily_limit)
+    print(f"📋 今回チェック対象: {len(targets)}件（全{len(rows) - 1}件中）")
+
+    for i, row in targets:
         title = row[0].strip() if len(row) > 0 else ""
         current_latest_volume = row[1].strip() if len(row) > 1 else ""
         genre = row[3].strip() if len(row) > 3 else ""
-        status = row[4].strip() if len(row) > 4 else ""
         is_notify_target = row[6].strip() if len(row) > 6 else ""
-
-        if not title or (status and status != "未処理"):
-            continue
 
         try:
             m = re.match(r"(.+?)([0-9]+)$", title)
@@ -296,10 +341,16 @@ def process_auto_rows(ws, calendar_service, rows):
                 current_vol_num = int(current_latest_volume) if current_latest_volume.isdigit() else 0
 
                 if matched_volume > current_vol_num:
-                    ws.update_cell(i, 2, matched_volume)
-                    ws.update_cell(i, 3, release_date.strftime("%Y/%m/%d"))
-                    ws.update_cell(i, 5, "完了")
-                    ws.update_cell(i, 6, datetime.now().strftime("%Y/%m/%d %H:%M:%S"))
+                    batch_update_row(
+                        ws,
+                        i,
+                        {
+                            2: matched_volume,
+                            3: release_date.strftime("%Y/%m/%d"),
+                            5: "完了",
+                            6: datetime.now().strftime("%Y/%m/%d %H:%M:%S"),
+                        },
+                    )
 
                     create_calendar_event(calendar_service, title, matched_volume, release_date)
 
@@ -310,33 +361,19 @@ def process_auto_rows(ws, calendar_service, rows):
                         print(f"📅 カレンダー登録のみ（通知OFF）: {title} 第{matched_volume}巻")
                 else:
                     print(f"⏭ 最新巻数の更新なし: {title}")
-                    ws.update_cell(i, 5, "完了")
-                    ws.update_cell(i, 6, datetime.now().strftime("%Y/%m/%d %H:%M:%S"))
+                    batch_update_row(
+                        ws, i, {5: "完了", 6: datetime.now().strftime("%Y/%m/%d %H:%M:%S")}
+                    )
             else:
                 print(f"🔍 完全一致する作品が見つかりませんでした: {title}（検索クエリ: {search_title}）")
-                ws.update_cell(i, 5, "完了")
-                ws.update_cell(i, 6, datetime.now().strftime("%Y/%m/%d %H:%M:%S"))
+                batch_update_row(
+                    ws, i, {5: "完了", 6: datetime.now().strftime("%Y/%m/%d %H:%M:%S")}
+                )
 
         except Exception as e:
             print(f"❌ エラー（Row {i}）: {e}")
 
         time.sleep(REQUEST_INTERVAL_SEC)
-
-
-def reset_old_processed_rows(ws):
-    rows = ws.get_all_values()
-    today = datetime.now()
-    for i, row in enumerate(rows[1:], start=2):
-        status = row[4].strip() if len(row) > 4 else ""
-        last_update_str = row[5].strip() if len(row) > 5 else ""
-        if status != "完了" or not last_update_str:
-            continue
-        try:
-            last_update = datetime.strptime(last_update_str, "%Y/%m/%d %H:%M:%S")
-        except ValueError:
-            continue
-        if (today - last_update).days >= RESET_AFTER_DAYS:
-            ws.update_cell(i, 5, "未処理")
 
 
 def main():
@@ -349,12 +386,9 @@ def main():
     rows = ws.get_all_values()
     process_manual_rows(ws, calendar_service, rows)
 
-    print("🔁 通常巡回処理を開始します...")
+    print(f"🔁 通常巡回処理を開始します（1日あたり最大{DAILY_LIMIT}件）...")
     rows = ws.get_all_values()  # 手動処理での更新を反映するため再取得
-    process_auto_rows(ws, calendar_service, rows)
-
-    print("🔁 5日以上前に完了した行を未処理に戻します...")
-    reset_old_processed_rows(ws)
+    process_auto_rows(ws, calendar_service, rows, DAILY_LIMIT)
 
     print("✅ 全処理が完了しました。")
 
