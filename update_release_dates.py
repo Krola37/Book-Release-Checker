@@ -298,6 +298,16 @@ def fetch_search_items(genre, search_title):
 # ------------------------------------------------------------
 # 通知・カレンダー
 # ------------------------------------------------------------
+def format_volume_label(volume):
+    """
+    B列の巻数表記を表示用ラベルに変換する。
+    数字のみ（通常の巻数）なら "第N巻"、それ以外（Ep.14 / Alter.2 のような
+    特殊なシリーズ表記）はそのままの文字列を使う。
+    """
+    s = str(volume).strip()
+    return f"第{s}巻" if s.isdigit() else s
+
+
 def send_discord(title, volume, release_date_str, genre):
     if not DISCORD_WEBHOOK_URL:
         return
@@ -308,11 +318,12 @@ def send_discord(title, volume, release_date_str, genre):
     elif genre in ("ライトノベル", "文庫"):
         emoji = "📖"
 
+    volume_label = format_volume_label(volume)
     message = (
         f"{emoji} **新刊の発売情報を見つけました！**\n"
         f"----------------------------\n"
         f"・ **作品名:** {title}\n"
-        f"・ **巻数:** 第{volume}巻\n"
+        f"・ **巻数:** {volume_label}\n"
         f"・ **発売日:** {release_date_str}\n"
         f"・ **ジャンル:** {genre}\n"
         f"----------------------------"
@@ -324,9 +335,10 @@ def send_discord(title, volume, release_date_str, genre):
 
 
 def create_calendar_event(calendar_service, title, volume, release_date):
+    volume_label = format_volume_label(volume)
     event = {
-        "summary": f"{title} 第{volume}巻",
-        "description": f"作品タイトル：{title}\n巻数：{volume}巻",
+        "summary": f"{title} {volume_label}",
+        "description": f"作品タイトル：{title}\n巻数：{volume_label}",
         "start": {"date": release_date.strftime("%Y-%m-%d")},
         "end": {"date": (release_date + timedelta(days=1)).strftime("%Y-%m-%d")},
     }
@@ -393,7 +405,9 @@ def process_manual_rows(ws, calendar_service, rows):
                 continue
 
             release_date = parse_date_flexible(release_date_str)
-            matched_volume = int(current_latest_volume)
+            # B列は通常の巻数（数字）だけでなく、"Ep.14" "Alter.2" のような
+            # 特殊なシリーズ表記もそのまま受け付ける（int変換は行わない）。
+            matched_volume = current_latest_volume
 
             create_calendar_event(calendar_service, title, matched_volume, release_date)
 
@@ -406,7 +420,7 @@ def process_manual_rows(ws, calendar_service, rows):
                 {5: "完了", 6: force_text(datetime.now().strftime("%Y/%m/%d")), 8: False},
             )
 
-            print(f"✅ 【手動登録成功】 Row {i}: {title} を処理しました。")
+            print(f"✅ 【手動登録成功】 Row {i}: {title}（{matched_volume}）を処理しました。")
 
         except Exception as e:
             print(f"❌ 手動登録エラー（Row {i}）: {e}")
