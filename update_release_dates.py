@@ -215,19 +215,23 @@ def fetch_search_items(genre, search_title):
             items = extract_items(resp.text)
 
             if not items:
-                # 0件だった場合、実際に何が返ってきているのか生データを確認する。
-                # ・作品候補件数の表示があるか（サイト側が本当に0件と判定したか）
-                # ・itemlistのliタグ自体は存在するか（セレクタのズレでないか）
-                # ・想定外のページ（トップページ等）が返っていないか
-                snippet = resp.text[:200].replace("\n", " ")
-                has_item_count = "作品候補" in resp.text
-                li_item_count = resp.text.count('class="item"')
+                # 0件だった場合、実際の <li class="item"> の生マークアップを
+                # そのまま出力する。これでname/sab等の内部構造がなぜ
+                # 抽出に失敗したか直接確認できる。
+                idx = resp.text.find('class="item"')
+                if idx != -1:
+                    start = max(0, idx - 20)
+                    raw_snippet = resp.text[start:start + 1200]
+                else:
+                    raw_snippet = "(class=\"item\" が見つかりませんでした)"
+                # 実際に BeautifulSoup が li.item として拾えている数を確認
+                soup_debug = BeautifulSoup(resp.text, "html.parser")
+                li_matched = len(soup_debug.select("li.item"))
                 print(
-                    f"    🩺 0件デバッグ [{url}] "
-                    f"status={resp.status_code} len={len(resp.text)} "
-                    f'"作品候補"表示={has_item_count} li.item出現数={li_item_count} '
-                    f"先頭200文字: {snippet}"
+                    f"    🩺 0件デバッグ [{url}] status={resp.status_code} len={len(resp.text)} "
+                    f"BeautifulSoupでのli.item一致数={li_matched}"
                 )
+                print(f"    🩺 生マークアップ抜粋: {raw_snippet}")
 
             return items, allowed_categories
         except requests.exceptions.RequestException as e:
