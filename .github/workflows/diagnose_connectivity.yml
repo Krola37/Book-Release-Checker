@@ -1,9 +1,7 @@
-# 保存先: .github/workflows/diagnose_connectivity.yml
-# 目的：GitHub Actionsの実行環境から
-#   ①一般的な外部サイトに接続できるか
-#   ②sumikko.info系サイトに接続できるか
-# を切り分けて確認する。
-name: Diagnose Connectivity
+# 保存先: .github/workflows/diagnose_connectivity_v2.yml
+# 目的：同じジョブ（＝同じIPアドレス）内で、curlとPython requestsの
+#   両方からsumikko.infoへの接続を試し、どちらが失敗するかを切り分ける。
+name: Diagnose Connectivity v2
 
 on:
   workflow_dispatch: {}
@@ -12,24 +10,66 @@ jobs:
   diagnose:
     runs-on: ubuntu-latest
     steps:
-      - name: Check general internet connectivity
-        run: |
-          echo "=== httpbin.org (一般的な外部サイト) ==="
-          curl -v --max-time 15 https://httpbin.org/get || echo "❌ httpbin.org にも接続できません"
+      - name: Show runner's global IP
+        run: curl -s --max-time 10 https://ifconfig.me || true
 
-      - name: Check sumikko.info (comic)
+      - name: curl test (1st)
         run: |
-          echo "=== comic.sumikko.info ==="
-          curl -v --max-time 15 "https://comic.sumikko.info/search/?k=%E3%83%AF%E3%83%B3%E3%83%94%E3%83%BC%E3%82%B9" || echo "❌ comic.sumikko.info に接続できません"
+          echo "=== curl 1回目 ==="
+          curl -sS --max-time 20 -o /dev/null -w "HTTPステータス: %{http_code} / 所要時間: %{time_total}s\n" \
+            "https://comic.sumikko.info/search/?k=%E3%82%AD%E3%83%B3%E3%82%B0%E3%83%80%E3%83%A0" || echo "❌ curl失敗"
 
-      - name: Check sumikko.info top page
-        run: |
-          echo "=== comic.sumikko.info トップページ ==="
-          curl -v --max-time 15 "https://comic.sumikko.info/" || echo "❌ トップページにも接続できません"
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-      - name: DNS resolution check
+      - name: Install requests
+        run: pip install requests
+
+      - name: Python requests test
         run: |
-          echo "=== DNS解決確認 ==="
-          nslookup comic.sumikko.info || true
-          echo "=== GitHub Actions ランナーのグローバルIP ==="
-          curl -s --max-time 10 https://ifconfig.me || true
+          python3 << 'EOF'
+          import requests
+          import time
+
+          url = "https://comic.sumikko.info/search/?k=%E3%82%AD%E3%83%B3%E3%82%B0%E3%83%80%E3%83%A0"
+
+          # パターンA: ヘッダーなし（デフォルトのUser-Agent）
+          try:
+              start = time.time()
+              r = requests.get(url, timeout=20)
+              print(f"✅ パターンA（デフォルトヘッダー）成功: status={r.status_code}, "
+                    f"time={time.time()-start:.1f}s, len={len(r.text)}")
+          except Exception as e:
+              print(f"❌ パターンA（デフォルトヘッダー）失敗: {e}")
+
+          # パターンB: curlと同じUser-Agentを送る
+          try:
+              start = time.time()
+              r = requests.get(url, timeout=20, headers={"User-Agent": "curl/8.5.0"})
+              print(f"✅ パターンB（curl UA）成功: status={r.status_code}, "
+                    f"time={time.time()-start:.1f}s, len={len(r.text)}")
+          except Exception as e:
+              print(f"❌ パターンB（curl UA）失敗: {e}")
+
+          # パターンC: ブラウザ風のUser-Agent + Accept-Language
+          try:
+              start = time.time()
+              headers = {
+                  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                                 "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                  "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+              }
+              r = requests.get(url, timeout=20, headers=headers)
+              print(f"✅ パターンC（ブラウザ風UA）成功: status={r.status_code}, "
+                    f"time={time.time()-start:.1f}s, len={len(r.text)}")
+          except Exception as e:
+              print(f"❌ パターンC（ブラウザ風UA）失敗: {e}")
+          EOF
+
+      - name: curl test (2nd, after python)
+        run: |
+          echo "=== curl 2回目（Python実行後） ==="
+          curl -sS --max-time 20 -o /dev/null -w "HTTPステータス: %{http_code} / 所要時間: %{time_total}s\n" \
+            "https://comic.sumikko.info/search/?k=%E3%82%AD%E3%83%B3%E3%82%B0%E3%83%80%E3%83%A0" || echo "❌ curl失敗"
