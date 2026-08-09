@@ -101,8 +101,29 @@ def simplify_title_for_search(title):
 ITEM_NAME_VOLUME_PATTERN = re.compile(r"^(.*?)[\s　]*([0-9]+)$")
 DATE_PATTERN = re.compile(r"([0-9]{2})年([0-9]{1,2})月([0-9]{1,2})日\(([月火水木金土日])\)")
 
+# ジャンル（スプレッドシートD列）ごとに、type-tag（カテゴリ表示）の
+# 許可リストを切り替える（ホワイトリスト方式）。
+# サイトが検索対象のジャンルによって別ドメイン（comic./novel./bunko.）に
+# 分かれているのに加え、同じサイト内でもtype-tagの値がジャンルによって
+# 異なる（例: コミックサイトは「コミック」、ライトノベルサイトは
+# 「ライトノベル」「TL」「ジュニアノベル」など複数）ため、
+# ジャンルごとに許可するtype-tagを個別に定義する。
+#
+# 実データで確認済みの値：
+#   コミック     : "コミック"
+#   ライトノベル : "ライトノベル" / "TL" / "ジュニアノベル"（実データで確認済み）
+#   文庫         : 未確認（"文庫"を仮設定。誤除外が出たら調整）
+#
+# ライトノベルの "TL"（ティーンズラブ）・"ジュニアノベル"（映画ノベライズ等）を
+# 対象に含めたくない場合は、該当ジャンルのsetから取り除いてください。
+ALLOWED_CATEGORIES = {
+    "コミック": {"コミック"},
+    "ライトノベル": {"ライトノベル", "TL", "ジュニアノベル"},
+    "文庫": {"文庫"},
+}
 
-def extract_comic_items(html):
+
+def extract_items(html, allowed_categories):
     """
     検索結果ページのHTMLから「作品タイトル・巻数・発売日・カテゴリ」の
     一覧を抽出する（実際のタグ構造に基づく解析）。
@@ -115,8 +136,8 @@ def extract_comic_items(html):
         ...
       </li>
 
-    type-tag が "コミック" 以外（"ムックその他" などグッズ・関連商品）は
-    ここで除外する。これが「作品以外の商品」対策の本体。
+    type-tag が allowed_categories に含まれないもの（グッズ・関連商品・
+    対象外ジャンルの商品）は除外する。
     """
     soup = BeautifulSoup(html, "html.parser")
     items = []
@@ -124,8 +145,8 @@ def extract_comic_items(html):
     for li in soup.select("li.item"):
         type_tag = li.select_one(".type-tag")
         category = type_tag.get_text(strip=True) if type_tag else ""
-        if category != "コミック":
-            continue  # グッズ・ムック等、書籍以外の商品を除外
+        if category not in allowed_categories:
+            continue  # ホワイトリスト外（グッズ・対象外ジャンル）を除外
 
         name_div = li.select_one(".name")
         if not name_div:
@@ -160,6 +181,7 @@ def extract_comic_items(html):
                 "month": int(dm.group(2)),
                 "day": int(dm.group(3)),
                 "weekday": dm.group(4),
+                "category": category,
             }
         )
     return items
@@ -167,6 +189,7 @@ def extract_comic_items(html):
 
 def fetch_search_items(genre, search_title):
     base_url = GENRE_URLS.get(genre, GENRE_URLS["コミック"])
+    allowed_categories = ALLOWED_CATEGORIES.get(genre, ALLOWED_CATEGORIES["コミック"])
     query = simplify_title_for_search(search_title)
     url = base_url + requests.utils.quote(query)
 
@@ -178,7 +201,7 @@ def fetch_search_items(genre, search_title):
             # 短めに切って早くリトライに回す。
             resp = requests.get(url, timeout=(10, 30), headers=HEADERS)
             resp.encoding = "utf-8"
-            return extract_comic_items(resp.text)
+            return extract_items(resp.text, allowed_categories)
         except requests.exceptions.RequestException as e:
             last_error = e
             print(f"⚠️ 接続失敗（{attempt}/{MAX_RETRIES}回目, {url}）: {e}")
