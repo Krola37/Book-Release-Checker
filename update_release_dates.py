@@ -22,7 +22,17 @@ import os
 import re
 import time
 import unicodedata
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+# GitHub Actionsのランナーは標準でUTCで動作するため、datetime.now()を
+# そのまま使うとJST（日本時間）の午前0時〜9時台の実行時に日付が1日
+# 古く記録されてしまう（例: JST 8/11 6:00 = UTC 8/10 21:00）。
+# F列・C列に記録する「今日」の日付は、常にJST基準で統一する。
+JST = timezone(timedelta(hours=9))
+
+
+def now_jst():
+    return datetime.now(JST)
 
 import gspread
 import requests
@@ -339,11 +349,15 @@ def send_discord(title, volume, release_date_str, genre):
         print(f"❌ Discord送信エラー: {e}")
 
 
-def create_calendar_event(calendar_service, title, volume, release_date):
+def create_calendar_event(calendar_service, title, volume, release_date, genre=None):
     volume_label = format_volume_label(volume)
+    genre_tag = f"[{genre}] " if genre else ""
+    description_lines = [f"作品タイトル：{title}", f"巻数：{volume_label}"]
+    if genre:
+        description_lines.append(f"ジャンル：{genre}")
     event = {
-        "summary": f"{title} {volume_label}",
-        "description": f"作品タイトル：{title}\n巻数：{volume_label}",
+        "summary": f"{genre_tag}{title} {volume_label}",
+        "description": "\n".join(description_lines),
         "start": {"date": release_date.strftime("%Y-%m-%d")},
         "end": {"date": (release_date + timedelta(days=1)).strftime("%Y-%m-%d")},
     }
@@ -414,7 +428,7 @@ def process_manual_rows(ws, calendar_service, rows):
             # 特殊なシリーズ表記もそのまま受け付ける（int変換は行わない）。
             matched_volume = current_latest_volume
 
-            create_calendar_event(calendar_service, title, matched_volume, release_date)
+            create_calendar_event(calendar_service, title, matched_volume, release_date, genre)
 
             if is_true(is_notify_target):
                 send_discord(title, matched_volume, release_date.strftime("%Y/%m/%d"), genre)
@@ -422,7 +436,7 @@ def process_manual_rows(ws, calendar_service, rows):
             batch_update_row(
                 ws,
                 i,
-                {5: "完了", 6: force_text(datetime.now().strftime("%Y/%m/%d")), 8: False},
+                {5: "完了", 6: force_text(now_jst().strftime("%Y/%m/%d")), 8: False},
             )
 
             print(f"✅ 【手動登録成功】 Row {i}: {title}（{matched_volume}）を処理しました。")
@@ -520,11 +534,11 @@ def process_auto_rows(ws, calendar_service, rows, daily_limit):
                             2: matched_volume,
                             3: force_text(release_date.strftime("%Y/%m/%d")),
                             5: "完了",
-                            6: force_text(datetime.now().strftime("%Y/%m/%d")),
+                            6: force_text(now_jst().strftime("%Y/%m/%d")),
                         },
                     )
 
-                    create_calendar_event(calendar_service, title, matched_volume, release_date)
+                    create_calendar_event(calendar_service, title, matched_volume, release_date, genre)
 
                     if is_true(is_notify_target):
                         send_discord(title, matched_volume, release_date.strftime("%Y/%m/%d"), genre)
@@ -534,7 +548,7 @@ def process_auto_rows(ws, calendar_service, rows, daily_limit):
                 else:
                     print(f"⏭ 最新巻数の更新なし: {title}")
                     batch_update_row(
-                        ws, i, {5: "完了", 6: force_text(datetime.now().strftime("%Y/%m/%d"))}
+                        ws, i, {5: "完了", 6: force_text(now_jst().strftime("%Y/%m/%d"))}
                     )
             elif title_matches:
                 # タイトルは一致したがカテゴリで除外された → ホワイトリストの不足
@@ -544,7 +558,7 @@ def process_auto_rows(ws, calendar_service, rows, daily_limit):
                     f"（見つかったカテゴリ: {found_categories} / 許可: {sorted(allowed_categories)}）"
                 )
                 batch_update_row(
-                    ws, i, {5: "完了", 6: force_text(datetime.now().strftime("%Y/%m/%d"))}
+                    ws, i, {5: "完了", 6: force_text(now_jst().strftime("%Y/%m/%d"))}
                 )
             else:
                 # タイトル自体が1件も一致しなかった → 検索結果に候補があれば
@@ -556,7 +570,7 @@ def process_auto_rows(ws, calendar_service, rows, daily_limit):
                     f"{' / 候補例: ' + str(sample_titles) if sample_titles else ''}"
                 )
                 batch_update_row(
-                    ws, i, {5: "完了", 6: force_text(datetime.now().strftime("%Y/%m/%d"))}
+                    ws, i, {5: "完了", 6: force_text(now_jst().strftime("%Y/%m/%d"))}
                 )
 
         except requests.exceptions.RequestException as e:
