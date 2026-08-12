@@ -379,8 +379,7 @@ def event_already_exists(calendar_service, summary, release_date):
 
 def create_calendar_event(calendar_service, title, volume, release_date, genre=None):
     volume_label = format_volume_label(volume)
-    genre_tag = f"[{genre}] " if genre else ""
-    summary = f"{genre_tag}{title} {volume_label}"
+    summary = f"{title} {volume}"
 
     if event_already_exists(calendar_service, summary, release_date):
         print(f"⏭ カレンダーに同一イベントが既に存在するため登録をスキップ: {summary}")
