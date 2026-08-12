@@ -349,19 +349,54 @@ def send_discord(title, volume, release_date_str, genre):
         print(f"❌ Discord送信エラー: {e}")
 
 
+def event_already_exists(calendar_service, summary, release_date):
+    """
+    重複登録防止チェック。同じ日付に、同じsummary（タイトル+巻数表記）の
+    イベントが既に存在するか確認する。
+    テスト実行の繰り返しや、同じ行が複数回処理された場合などに
+    同一イベントが何件も追加されてしまうのを防ぐ。
+    """
+    day_start = datetime(release_date.year, release_date.month, release_date.day, tzinfo=JST)
+    day_end = day_start + timedelta(days=1)
+
+    resp = (
+        calendar_service.events()
+        .list(
+            calendarId=CALENDAR_ID,
+            timeMin=day_start.astimezone(timezone.utc).isoformat(),
+            timeMax=day_end.astimezone(timezone.utc).isoformat(),
+            singleEvents=True,
+            q=summary,  # まず件数を絞るための全文検索（厳密一致は下でチェック）
+        )
+        .execute()
+    )
+
+    for event in resp.get("items", []):
+        if event.get("summary", "") == summary:
+            return True
+    return False
+
+
 def create_calendar_event(calendar_service, title, volume, release_date, genre=None):
     volume_label = format_volume_label(volume)
     genre_tag = f"[{genre}] " if genre else ""
+    summary = f"{genre_tag}{title} {volume_label}"
+
+    if event_already_exists(calendar_service, summary, release_date):
+        print(f"⏭ カレンダーに同一イベントが既に存在するため登録をスキップ: {summary}")
+        return False
+
     description_lines = [f"作品タイトル：{title}", f"巻数：{volume_label}"]
     if genre:
         description_lines.append(f"ジャンル：{genre}")
     event = {
-        "summary": f"{genre_tag}{title} {volume_label}",
+        "summary": summary,
         "description": "\n".join(description_lines),
         "start": {"date": release_date.strftime("%Y-%m-%d")},
         "end": {"date": (release_date + timedelta(days=1)).strftime("%Y-%m-%d")},
     }
     calendar_service.events().insert(calendarId=CALENDAR_ID, body=event).execute()
+    return True
 
 
 def is_true(value):
