@@ -32,7 +32,7 @@
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | ダウンロードしたJSONキーファイルの中身をそのまま貼り付け |
 | `SPREADSHEET_ID` | スプレッドシートのURLの `/d/` と `/edit` の間の文字列 |
 | `SHEET_NAME` | 対象シートのタブ名（例：`シート1`） |
-| `CALENDAR_ID` | GASコードにあった `[REDACTED-CALENDAR-ID]...@group.calendar.google.com` |
+| `CALENDAR_ID` | 対象のGoogleカレンダーのカレンダーID（例: `abcdef1234567890abcdef1234567890@group.calendar.google.com`。カレンダー設定の「カレンダーの統合」欄で確認できます） |
 | `DISCORD_WEBHOOK_URL` | Discord Webhook URL |
 
 ## 5. 動作確認
