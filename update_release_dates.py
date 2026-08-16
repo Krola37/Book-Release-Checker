@@ -349,6 +349,71 @@ def send_discord(title, volume, release_date_str, genre):
         print(f"❌ Discord送信エラー: {e}")
 
 
+def collect_todays_releases(rows):
+    """C列（発売日）が本日（JST）と一致する行を全件集める（G列フラグは問わない）"""
+    today = now_jst().date()
+    items = []
+    for row in rows[1:]:
+        title = row[0].strip() if len(row) > 0 else ""
+        volume = row[1].strip() if len(row) > 1 else ""
+        release_date_str = row[2].strip() if len(row) > 2 else ""
+        genre = row[3].strip() if len(row) > 3 else ""
+        if not title or not release_date_str:
+            continue
+        try:
+            release_date = parse_date_flexible(release_date_str).date()
+        except ValueError:
+            continue
+        if release_date == today:
+            items.append((title, volume, genre))
+    return items
+
+
+def send_daily_digest(rows):
+    """
+    本日発売予定の書籍を1回のDiscordメッセージにまとめて送信する。
+    個別の新刊検知通知（send_discord）とは別に、C列（発売日）が本日と
+    一致する行をG列（通知フラグ）に関係なく全件集計する。0件の日は送信しない。
+    """
+    if not DISCORD_WEBHOOK_URL:
+        return
+
+    items = collect_todays_releases(rows)
+    if not items:
+        print("📭 本日発売の書籍はありません（ダイジェスト送信をスキップ）。")
+        return
+
+    today_label = now_jst().strftime("%Y/%m/%d")
+    lines = [f"📚 **本日（{today_label}）発売の書籍一覧（{len(items)}件）**", "----------------------------"]
+    for title, volume, genre in items:
+        volume_label = format_volume_label(volume)
+        genre_label = f"（{genre}）" if genre else ""
+        lines.append(f"・{title} {volume_label}{genre_label}")
+    lines.append("----------------------------")
+
+    # Discordの1メッセージあたりの文字数制限（2000文字）を考慮し、
+    # 超える場合は複数メッセージに分割して送信する。
+    DISCORD_MAX_LEN = 1900
+    chunks = []
+    current, current_len = [], 0
+    for line in lines:
+        if current and current_len + len(line) + 1 > DISCORD_MAX_LEN:
+            chunks.append("\n".join(current))
+            current, current_len = [], 0
+        current.append(line)
+        current_len += len(line) + 1
+    if current:
+        chunks.append("\n".join(current))
+
+    for chunk in chunks:
+        try:
+            requests.post(DISCORD_WEBHOOK_URL, json={"content": chunk}, timeout=10)
+        except Exception as e:
+            print(f"❌ 本日発売ダイジェスト送信エラー: {e}")
+
+    print(f"📬 本日発売ダイジェストを送信しました（{len(items)}件、{len(chunks)}メッセージ）。")
+
+
 def event_already_exists(calendar_service, summary, release_date):
     """
     重複登録防止チェック。同じ日付に、同じsummary（タイトル+巻数表記）の
@@ -640,6 +705,10 @@ def main():
     print(f"🔁 通常巡回処理を開始します（1日あたり最大{DAILY_LIMIT}件）...")
     rows = ws.get_all_values()  # 手動処理での更新を反映するため再取得
     process_auto_rows(ws, calendar_service, rows, DAILY_LIMIT)
+
+    print("📬 本日発売の書籍ダイジェストを確認します...")
+    rows = ws.get_all_values()  # 通常巡回での更新を反映するため再取得
+    send_daily_digest(rows)
 
     print("✅ 全処理が完了しました。")
 
