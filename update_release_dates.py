@@ -330,6 +330,7 @@ def format_volume_label(volume):
 # 送信パターンが増えるため採用しない）
 EMBED_COLOR_NEW_RELEASE = 0xE67E22  # オレンジ：新刊を検知した個別通知
 EMBED_COLOR_DAILY_DIGEST = 0x3498DB  # 青：本日発売ダイジェスト
+EMBED_COLOR_MANUAL_REVIEW_DIGEST = 0x9B59B6  # 紫：月次の手動確認まとめ
 
 
 def send_discord(title, volume, release_date_str, genre):
@@ -431,6 +432,92 @@ def send_daily_digest(rows):
             print(f"❌ 本日発売ダイジェスト送信エラー: {e}")
 
     print(f"📬 本日発売ダイジェストを送信しました（{len(items)}件、{len(chunks)}メッセージ）。")
+
+
+def collect_manual_review_items(rows):
+    """H列（手動更新フラグ）がTRUEの行を全件集める（自動検索で解決できず、手動確認が必要な行）"""
+    items = []
+    for row in rows[1:]:
+        title = row[0].strip() if len(row) > 0 else ""
+        genre = row[3].strip() if len(row) > 3 else ""
+        is_manual_flag = row[7].strip() if len(row) > 7 else ""
+        if not title or not is_true(is_manual_flag):
+            continue
+        items.append((title, genre))
+    return items
+
+
+def build_manual_search_url(title, genre):
+    """
+    スプレッドシートのHYPERLINK式（H列がTRUEの行に手動検索リンクを表示するための
+    既存の運用フォーミュラ）と同じロジックで検索URLを組み立てる。
+    ジャンルがGENRE_URLSの3種類（コミック/ライトノベル/文庫）以外の場合はNoneを返す。
+    """
+    base_url = GENRE_URLS.get(genre)
+    if base_url is None:
+        return None
+    return base_url + requests.utils.quote(title)
+
+
+def send_monthly_manual_review_digest(rows):
+    """
+    毎月1日の実行時にのみ、H列（手動更新フラグ）がTRUEのままの行を
+    1回のDiscordメッセージにまとめて送信する（自動検索で解決できていない
+    作品を月に1度まとめて手動確認してもらうため）。1日以外はスキップする。
+    """
+    if not DISCORD_WEBHOOK_URL:
+        return
+
+    today = now_jst()
+    if today.day != 1:
+        return
+
+    items = collect_manual_review_items(rows)
+    if not items:
+        print("🗓 手動確認が必要な作品はありません（月次まとめ送信をスキップ）。")
+        return
+
+    lines = []
+    for title, genre in items:
+        url = build_manual_search_url(title, genre)
+        genre_label = genre or "ジャンル不明"
+        if url:
+            lines.append(f"・[{title}]({url})（{genre_label}）")
+        else:
+            lines.append(f"・{title}（{genre_label}）")
+
+    # Discordの埋め込みdescription上限（4096文字）を考慮し、超える場合は
+    # 複数の埋め込み（＝複数メッセージ）に分割して送信する。
+    DISCORD_MAX_LEN = 3800
+    chunks = []
+    current, current_len = [], 0
+    for line in lines:
+        if current and current_len + len(line) + 1 > DISCORD_MAX_LEN:
+            chunks.append(current)
+            current, current_len = [], 0
+        current.append(line)
+        current_len += len(line) + 1
+    if current:
+        chunks.append(current)
+
+    month_label = today.strftime("%Y/%m")
+    total_chunks = len(chunks)
+    for idx, chunk_lines in enumerate(chunks, start=1):
+        title_label = f"🔍 手動確認が必要な作品一覧（{month_label}）"
+        if total_chunks > 1:
+            title_label += f"（{idx}/{total_chunks}）"
+        embed = {
+            "title": title_label,
+            "description": "\n".join(chunk_lines),
+            "color": EMBED_COLOR_MANUAL_REVIEW_DIGEST,
+            "footer": {"text": f"手動確認が必要な作品：{len(items)}件"},
+        }
+        try:
+            requests.post(DISCORD_WEBHOOK_URL, json={"embeds": [embed]}, timeout=10)
+        except Exception as e:
+            print(f"❌ 月次手動確認まとめ送信エラー: {e}")
+
+    print(f"📬 月次の手動確認まとめを送信しました（{len(items)}件、{len(chunks)}メッセージ）。")
 
 
 def event_already_exists(calendar_service, summary, release_date):
@@ -554,7 +641,7 @@ def process_manual_rows(ws, calendar_service, rows):
             batch_update_row(
                 ws,
                 i,
-                {5: "完了", 6: force_text(now_jst().strftime("%Y/%m/%d")), 8: False},
+                {5: "完了", 6: force_text(now_jst().strftime("%Y/%m/%d"))},
             )
 
             print(f"✅ 【手動登録成功】 Row {i}: {title}（{matched_volume}）を処理しました。")
@@ -728,6 +815,9 @@ def main():
     print("📬 本日発売の書籍ダイジェストを確認します...")
     rows = ws.get_all_values()  # 通常巡回での更新を反映するため再取得
     send_daily_digest(rows)
+
+    print("🗓 月次の手動確認まとめ（毎月1日のみ送信）を確認します...")
+    send_monthly_manual_review_digest(rows)  # rowsはsend_daily_digestと同じもので良い（この間に書き込みはない）
 
     print("✅ 全処理が完了しました。")
 
