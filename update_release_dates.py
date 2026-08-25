@@ -325,6 +325,13 @@ def format_volume_label(volume):
     return f"第{s}巻" if s.isdigit() else s
 
 
+# Discord埋め込みの色（個別の新刊検知通知と、本日発売ダイジェストを
+# 見分けやすくするため、固定色で使い分ける。ジャンルごとの色分けは
+# 送信パターンが増えるため採用しない）
+EMBED_COLOR_NEW_RELEASE = 0xE67E22  # オレンジ：新刊を検知した個別通知
+EMBED_COLOR_DAILY_DIGEST = 0x3498DB  # 青：本日発売ダイジェスト
+
+
 def send_discord(title, volume, release_date_str, genre):
     if not DISCORD_WEBHOOK_URL:
         return
@@ -336,17 +343,18 @@ def send_discord(title, volume, release_date_str, genre):
         emoji = "📖"
 
     volume_label = format_volume_label(volume)
-    message = (
-        f"{emoji} **新刊の発売情報を見つけました！**\n"
-        f"----------------------------\n"
-        f"・ **作品名:** {title}\n"
-        f"・ **巻数:** {volume_label}\n"
-        f"・ **発売日:** {release_date_str}\n"
-        f"・ **ジャンル:** {genre}\n"
-        f"----------------------------"
-    )
+    embed = {
+        "title": f"{emoji} 新刊の発売情報を見つけました！",
+        "color": EMBED_COLOR_NEW_RELEASE,
+        "fields": [
+            {"name": "作品名", "value": title, "inline": False},
+            {"name": "巻数", "value": volume_label, "inline": True},
+            {"name": "発売日", "value": release_date_str, "inline": True},
+            {"name": "ジャンル", "value": genre or "不明", "inline": True},
+        ],
+    }
     try:
-        requests.post(DISCORD_WEBHOOK_URL, json={"content": message}, timeout=10)
+        requests.post(DISCORD_WEBHOOK_URL, json={"embeds": [embed]}, timeout=10)
     except Exception as e:
         print(f"❌ Discord送信エラー: {e}")
 
@@ -386,30 +394,39 @@ def send_daily_digest(rows):
         return
 
     today_label = now_jst().strftime("%Y/%m/%d")
-    lines = [f"📚 **本日（{today_label}）発売の書籍一覧（{len(items)}件）**", "----------------------------"]
+    lines = []
     for title, volume, genre in items:
         volume_label = format_volume_label(volume)
         genre_label = f"（{genre}）" if genre else ""
         lines.append(f"・{title} {volume_label}{genre_label}")
-    lines.append("----------------------------")
 
-    # Discordの1メッセージあたりの文字数制限（2000文字）を考慮し、
-    # 超える場合は複数メッセージに分割して送信する。
-    DISCORD_MAX_LEN = 1900
+    # Discordの埋め込みdescription上限（4096文字）を考慮し、超える場合は
+    # 複数の埋め込み（＝複数メッセージ）に分割して送信する。
+    DISCORD_MAX_LEN = 3800
     chunks = []
     current, current_len = [], 0
     for line in lines:
         if current and current_len + len(line) + 1 > DISCORD_MAX_LEN:
-            chunks.append("\n".join(current))
+            chunks.append(current)
             current, current_len = [], 0
         current.append(line)
         current_len += len(line) + 1
     if current:
-        chunks.append("\n".join(current))
+        chunks.append(current)
 
-    for chunk in chunks:
+    total_chunks = len(chunks)
+    for idx, chunk_lines in enumerate(chunks, start=1):
+        title_label = f"📚 本日（{today_label}）発売の書籍一覧"
+        if total_chunks > 1:
+            title_label += f"（{idx}/{total_chunks}）"
+        embed = {
+            "title": title_label,
+            "description": "\n".join(chunk_lines),
+            "color": EMBED_COLOR_DAILY_DIGEST,
+            "footer": {"text": f"本日発売：{len(items)}件"},
+        }
         try:
-            requests.post(DISCORD_WEBHOOK_URL, json={"content": chunk}, timeout=10)
+            requests.post(DISCORD_WEBHOOK_URL, json={"embeds": [embed]}, timeout=10)
         except Exception as e:
             print(f"❌ 本日発売ダイジェスト送信エラー: {e}")
 
