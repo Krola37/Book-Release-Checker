@@ -380,21 +380,46 @@ def collect_todays_releases(rows):
     return items
 
 
-def send_daily_digest(rows):
+# I1セルに「本日分のダイジェストを送信済みか」の日付を記録する（再実行時の重複送信防止用）。
+# GitHub Actionsのワークフローは接続不良時に新しいランナーでジョブ全体を
+# 再実行するフォールバック構成になっており、ダイジェスト送信後に別の理由で
+# ジョブが失敗すると、再実行時に同じ内容のダイジェストが再送されてしまう
+# 問題があったため導入した。
+DAILY_DIGEST_SENT_DATE_ROW = 1
+DAILY_DIGEST_SENT_DATE_COL = 9  # I列
+
+
+def get_daily_digest_sent_date(rows):
+    header_row = rows[0] if rows else []
+    return header_row[8].strip() if len(header_row) > 8 else ""
+
+
+def mark_daily_digest_sent(ws, date_str):
+    batch_update_row(ws, DAILY_DIGEST_SENT_DATE_ROW, {DAILY_DIGEST_SENT_DATE_COL: force_text(date_str)})
+
+
+def send_daily_digest(rows, ws):
     """
     本日発売予定の書籍を1回のDiscordメッセージにまとめて送信する。
     個別の新刊検知通知（send_discord）とは別に、C列（発売日）が本日と
     一致する行をG列（通知フラグ）に関係なく全件集計する。0件の日は送信しない。
+    同じ日に二重実行（リトライ）されても再送しないよう、I1セルに送信済み
+    日付を記録し、既に本日分を送信済みならスキップする。
     """
     if not DISCORD_WEBHOOK_URL:
+        return
+
+    today_label = now_jst().strftime("%Y/%m/%d")
+    if get_daily_digest_sent_date(rows) == today_label:
+        print(f"⏭ 本日（{today_label}）分のダイジェストは送信済みのためスキップします。")
         return
 
     items = collect_todays_releases(rows)
     if not items:
         print("📭 本日発売の書籍はありません（ダイジェスト送信をスキップ）。")
+        mark_daily_digest_sent(ws, today_label)
         return
 
-    today_label = now_jst().strftime("%Y/%m/%d")
     lines = []
     for title, volume, genre in items:
         volume_label = format_volume_label(volume)
@@ -431,6 +456,7 @@ def send_daily_digest(rows):
         except Exception as e:
             print(f"❌ 本日発売ダイジェスト送信エラー: {e}")
 
+    mark_daily_digest_sent(ws, today_label)
     print(f"📬 本日発売ダイジェストを送信しました（{len(items)}件、{len(chunks)}メッセージ）。")
 
 
@@ -814,7 +840,7 @@ def main():
 
     print("📬 本日発売の書籍ダイジェストを確認します...")
     rows = ws.get_all_values()  # 通常巡回での更新を反映するため再取得
-    send_daily_digest(rows)
+    send_daily_digest(rows, ws)
 
     print("🗓 月次の手動確認まとめ（毎月1日のみ送信）を確認します...")
     send_monthly_manual_review_digest(rows)  # rowsはsend_daily_digestと同じもので良い（この間に書き込みはない）
