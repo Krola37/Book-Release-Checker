@@ -637,10 +637,10 @@ def batch_update_row(ws, row_index, values):
 # メイン処理
 # ------------------------------------------------------------
 def process_manual_rows(ws, calendar_service, rows):
-    """H列（手動更新フラグ）がONの行を最優先で処理する"""
+    """J列（手動検索済みチェック）がONの行を最優先で処理する"""
     for i, row in enumerate(rows[1:], start=2):
         title = row[0].strip() if len(row) > 0 else ""
-        is_manual_trigger = row[7].strip() if len(row) > 7 else ""
+        is_manual_trigger = row[9].strip() if len(row) > 9 else ""
         if not title or not is_true(is_manual_trigger):
             continue
 
@@ -667,7 +667,7 @@ def process_manual_rows(ws, calendar_service, rows):
             batch_update_row(
                 ws,
                 i,
-                {5: "完了", 6: force_text(now_jst().strftime("%Y/%m/%d"))},
+                {5: "完了", 6: force_text(now_jst().strftime("%Y/%m/%d")), 10: False},
             )
 
             print(f"✅ 【手動登録成功】 Row {i}: {title}（{matched_volume}）を処理しました。")
@@ -692,6 +692,8 @@ def select_rows_to_check(rows, daily_limit):
         title = row[0].strip() if len(row) > 0 else ""
         if not title:
             continue
+        if is_true(row[7].strip() if len(row) > 7 else ""):
+            continue  # H列TRUE（手動確認待ち）は自動検索が失敗する運命なのでスキップ
         last_update_str = row[5].strip() if len(row) > 5 else ""
         last_update = None
         for fmt in ("%Y/%m/%d", "%Y/%m/%d %H:%M:%S"):
@@ -717,7 +719,23 @@ def select_rows_to_check(rows, daily_limit):
     return [(i, row, last_update) for last_update, i, row in candidates[:daily_limit]]
 
 
+def touch_manual_review_rows(ws, rows):
+    """
+    H列（手動確認フラグ）がTRUEの行はサイト検索をスキップする代わりに、
+    F列（最終更新日時）だけ今日の日付に更新する。検索はせずF列だけ
+    触っておくことで、優先度付け（select_rows_to_check）で毎回
+    「未チェックの最古行」扱いになり続けるのを防ぐ。
+    """
+    today_str = force_text(now_jst().strftime("%Y/%m/%d"))
+    for i, row in enumerate(rows[1:], start=2):
+        title = row[0].strip() if len(row) > 0 else ""
+        if not title or not is_true(row[7].strip() if len(row) > 7 else ""):
+            continue
+        batch_update_row(ws, i, {6: today_str})
+
+
 def process_auto_rows(ws, calendar_service, rows, daily_limit):
+    touch_manual_review_rows(ws, rows)
     targets = select_rows_to_check(rows, daily_limit)
     print(f"📋 今回チェック対象: {len(targets)}件（全{len(rows) - 1}件中）")
 
@@ -830,7 +848,7 @@ def main():
     ws = gc.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
     calendar_service = build("calendar", "v3", credentials=creds)
 
-    print("⚡ 手動更新チェック（H列）の確認を開始します...")
+    print("⚡ 手動更新チェック（J列）の確認を開始します...")
     rows = ws.get_all_values()
     process_manual_rows(ws, calendar_service, rows)
 
