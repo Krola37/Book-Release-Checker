@@ -1,4 +1,4 @@
-# Book-Release-Checker
+# ShinkanRadar
 
 登録した作品（コミック・ライトノベル・文庫）の新刊発売日を自動で調べ、Googleスプレッドシートの更新・Googleカレンダーへの登録・Discordへの通知までを毎日自動で行うツールです。GitHub Actions上で無料枠で動作します（GAS版からの移植版）。
 
