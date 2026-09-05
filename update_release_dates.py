@@ -360,23 +360,35 @@ def send_discord(title, volume, release_date_str, genre):
         print(f"❌ Discord送信エラー: {e}")
 
 
-def collect_todays_releases(rows):
-    """C列（発売日）が本日（JST）と一致する行を全件集める（G列フラグは問わない）"""
+def collect_todays_releases(calendar_service):
+    """
+    本日（JST）が開始日のカレンダーイベントを全件集める。
+    スプレッドシートのC列（1タイトルにつき1つの日付しか持てない）ではなく
+    カレンダー側を見ることで、2カ月連続発売のように複数巻の発売日が
+    同時に検出された場合でも、各巻ごとの正しい発売日で拾えるようにしている。
+    """
     today = now_jst().date()
+    day_start = datetime(today.year, today.month, today.day, tzinfo=JST)
+    day_end = day_start + timedelta(days=1)
+
+    resp = (
+        calendar_service.events()
+        .list(
+            calendarId=CALENDAR_ID,
+            timeMin=day_start.astimezone(timezone.utc).isoformat(),
+            timeMax=day_end.astimezone(timezone.utc).isoformat(),
+            singleEvents=True,
+        )
+        .execute()
+    )
+
     items = []
-    for row in rows[1:]:
-        title = row[0].strip() if len(row) > 0 else ""
-        volume = row[1].strip() if len(row) > 1 else ""
-        release_date_str = row[2].strip() if len(row) > 2 else ""
-        genre = row[3].strip() if len(row) > 3 else ""
-        if not title or not release_date_str:
-            continue
-        try:
-            release_date = parse_date_flexible(release_date_str).date()
-        except ValueError:
-            continue
-        if release_date == today:
-            items.append((title, volume, genre))
+    for event in resp.get("items", []):
+        props = event.get("extendedProperties", {}).get("private", {})
+        title = props.get("title", "").strip()
+        if not title:
+            continue  # このスクリプト以外が作成したイベント等は対象外
+        items.append((title, props.get("volume", ""), props.get("genre", "")))
     return items
 
 
@@ -398,13 +410,14 @@ def mark_daily_digest_sent(ws, date_str):
     batch_update_row(ws, DAILY_DIGEST_SENT_DATE_ROW, {DAILY_DIGEST_SENT_DATE_COL: force_text(date_str)})
 
 
-def send_daily_digest(rows, ws):
+def send_daily_digest(rows, ws, calendar_service):
     """
     本日発売予定の書籍を1回のDiscordメッセージにまとめて送信する。
-    個別の新刊検知通知（send_discord）とは別に、C列（発売日）が本日と
-    一致する行をG列（通知フラグ）に関係なく全件集計する。0件の日は送信しない。
-    同じ日に二重実行（リトライ）されても再送しないよう、I1セルに送信済み
-    日付を記録し、既に本日分を送信済みならスキップする。
+    個別の新刊検知通知（send_discord）とは別に、本日が開始日のカレンダー
+    イベントを全件集計する（スプレッドシートのG列フラグは問わない）。
+    0件の日は送信しない。同じ日に二重実行（リトライ）されても再送しない
+    よう、I1セルに送信済み日付を記録し、既に本日分を送信済みならスキップ
+    する。
     """
     if not DISCORD_WEBHOOK_URL:
         return
@@ -414,7 +427,7 @@ def send_daily_digest(rows, ws):
         print(f"⏭ 本日（{today_label}）分のダイジェストは送信済みのためスキップします。")
         return
 
-    items = collect_todays_releases(rows)
+    items = collect_todays_releases(calendar_service)
     if not items:
         print("📭 本日発売の書籍はありません（ダイジェスト送信をスキップ）。")
         mark_daily_digest_sent(ws, today_label)
@@ -590,6 +603,12 @@ def create_calendar_event(calendar_service, title, volume, release_date, genre=N
         "description": "\n".join(description_lines),
         "start": {"date": release_date.strftime("%Y-%m-%d")},
         "end": {"date": (release_date + timedelta(days=1)).strftime("%Y-%m-%d")},
+        # 本日発売ダイジェスト（send_daily_digest）がスプレッドシートのC列
+        # （1タイトルにつき1つの日付しか持てない）ではなく、巻ごとに正しい
+        # 日付を持つカレンダー側のイベントを直接読めるようにするための構造化データ。
+        "extendedProperties": {
+            "private": {"title": title, "volume": str(volume), "genre": genre or ""}
+        },
     }
     calendar_service.events().insert(calendarId=CALENDAR_ID, body=event).execute()
     return True
@@ -770,30 +789,38 @@ def process_auto_rows(ws, calendar_service, rows, daily_limit):
             exact_matches = [it for it in title_matches if it["category"] in allowed_categories]
 
             if exact_matches:
-                best = max(exact_matches, key=lambda it: it["volume"])
-                matched_volume = best["volume"]
-                release_date = datetime(best["year"], best["month"], best["day"])
                 current_vol_num = int(current_latest_volume) if current_latest_volume.isdigit() else 0
+                # 2カ月連続発売のように複数巻が同時に検索結果へ出ることがあるため、
+                # 最大巻数だけでなく現在巻数より新しい巻を「全て」登録・通知する
+                # （最大巻数だけ採用すると、間の巻の通知が飛ばないバグになる）。
+                new_volumes = sorted(
+                    (it for it in exact_matches if it["volume"] > current_vol_num),
+                    key=lambda it: it["volume"],
+                )
 
-                if matched_volume > current_vol_num:
+                if new_volumes:
+                    for it in new_volumes:
+                        volume = it["volume"]
+                        release_date = datetime(it["year"], it["month"], it["day"])
+                        create_calendar_event(calendar_service, title, volume, release_date, genre)
+                        if is_true(is_notify_target):
+                            send_discord(title, volume, release_date.strftime("%Y/%m/%d"), genre)
+                            print(f"🔔 登録＆Discord通知送信: {title} 第{volume}巻")
+                        else:
+                            print(f"📅 カレンダー登録のみ（通知OFF）: {title} 第{volume}巻")
+
+                    latest = new_volumes[-1]
+                    latest_release_date = datetime(latest["year"], latest["month"], latest["day"])
                     batch_update_row(
                         ws,
                         i,
                         {
-                            2: matched_volume,
-                            3: force_text(release_date.strftime("%Y/%m/%d")),
+                            2: latest["volume"],
+                            3: force_text(latest_release_date.strftime("%Y/%m/%d")),
                             5: "完了",
                             6: force_text(now_jst().strftime("%Y/%m/%d")),
                         },
                     )
-
-                    create_calendar_event(calendar_service, title, matched_volume, release_date, genre)
-
-                    if is_true(is_notify_target):
-                        send_discord(title, matched_volume, release_date.strftime("%Y/%m/%d"), genre)
-                        print(f"🔔 登録＆Discord通知送信: {title} 第{matched_volume}巻")
-                    else:
-                        print(f"📅 カレンダー登録のみ（通知OFF）: {title} 第{matched_volume}巻")
                 else:
                     print(f"⏭ 最新巻数の更新なし: {title}")
                     batch_update_row(
@@ -858,7 +885,7 @@ def main():
 
     print("📬 本日発売の書籍ダイジェストを確認します...")
     rows = ws.get_all_values()  # 通常巡回での更新を反映するため再取得
-    send_daily_digest(rows, ws)
+    send_daily_digest(rows, ws, calendar_service)
 
     print("🗓 月次の手動確認まとめ（毎月1日のみ送信）を確認します...")
     send_monthly_manual_review_digest(rows)  # rowsはsend_daily_digestと同じもので良い（この間に書き込みはない）
